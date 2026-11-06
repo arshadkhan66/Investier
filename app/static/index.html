@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Investier — Universal Test &amp; Diagnostic Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230c0e14'/%3E%3Cpath d='M8 22 L14 12 L18 18 L24 9' stroke='%235eead4' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark"></span>
+    <div>
+      <h1>Investier</h1>
+      <p>Universal test &amp; diagnostic platform</p>
+    </div>
+  </div>
+  <div class="right">
+    <div class="model-badge" id="modelBadge" title="Local model status">
+      <span class="dot"></span><span id="modelText">model: checking…</span>
+    </div>
+    <div class="status" id="connStatus"><i></i> ready</div>
+  </div>
+</header>
+
+<main>
+  <section class="panel launch">
+    <label class="field-label" for="instruction">Tell it what to test — plain English</label>
+    <textarea id="instruction" rows="3" placeholder="e.g. Test my whole app — security, performance, mobile, accessibility, SEO, links, forms and DNS. Find anything missing or broken.">Test my whole app with everything — security, performance, mobile, accessibility, SEO, links, forms, API and infrastructure. Find anything missing, broken or wrong.</textarea>
+
+    <label class="field-label" for="target">What should it point at?</label>
+    <div class="target-row">
+      <input id="target" type="text" placeholder="https://your-app.com  ·  api.your-app.com/v1/status  ·  localhost:3000" />
+      <button id="runBtn" class="primary">Run diagnostic</button>
+    </div>
+
+    <div class="chips" id="chips">
+      <button class="chip" data-ins="everything">Everything</button>
+      <button class="chip" data-ins="security">Security</button>
+      <button class="chip" data-ins="performance">Performance</button>
+      <button class="chip" data-ins="mobile">Mobile</button>
+      <button class="chip" data-ins="accessibility">Accessibility</button>
+      <button class="chip" data-ins="SEO">SEO</button>
+      <button class="chip" data-ins="links and forms">Links &amp; forms</button>
+      <button class="chip" data-ins="the API endpoints">API</button>
+      <button class="chip" data-ins="stability under load">Stability</button>
+      <button class="chip" data-ins="DNS and email records">DNS &amp; email</button>
+    </div>
+
+    <details class="advanced">
+      <summary>Advanced options</summary>
+      <div class="adv-grid">
+        <label>Bearer token <input id="authHeader" type="text" placeholder="optional: Bearer xxxxx" /></label>
+        <label>Requests sampled <input id="samples" type="number" value="5" min="1" max="20" /></label>
+        <label>Max links to crawl <input id="maxLinks" type="number" value="15" min="0" max="60" /></label>
+        <label>Timeout (s) <input id="timeout" type="number" value="20" min="3" max="120" /></label>
+        <label>Load concurrency <input id="concurrency" type="number" value="10" min="1" max="50" /></label>
+        <label class="check"><input id="insecure" type="checkbox" /> Ignore TLS errors</label>
+        <label class="check"><input id="checkLinks" type="checkbox" checked /> Crawl internal links</label>
+        <label class="check"><input id="useLlm" type="checkbox" checked /> Use local model for planning &amp; summary</label>
+      </div>
+    </details>
+
+    <div class="plan-line" id="planLine"></div>
+  </section>
+
+  <section class="panel progress hidden" id="progress">
+    <div class="spinner"></div>
+    <div>
+      <strong id="progTitle">Running diagnostic…</strong>
+      <p id="progSub">Probing target, running suites, analyzing results.</p>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <div class="panel verdict-panel">
+      <div class="gauge-wrap">
+        <svg viewBox="0 0 120 120" class="gauge">
+          <circle cx="60" cy="60" r="52" class="gauge-track"></circle>
+          <circle cx="60" cy="60" r="52" class="gauge-fill" id="gaugeFill"></circle>
+        </svg>
+        <div class="gauge-num"><span id="scoreNum">0</span><small>/100</small></div>
+      </div>
+      <div class="verdict-body">
+        <h2 id="gradeText">—</h2>
+        <p id="verdictText"></p>
+        <div class="meta-row" id="metaRow"></div>
+      </div>
+      <div class="score-cards" id="scoreCards"></div>
+    </div>
+
+    <div class="panel narrative-panel hidden" id="narrativePanel">
+      <h3>AI summary <span class="src" id="narrativeSrc"></span></h3>
+      <p id="narrativeText"></p>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Problems &amp; errors found</h3>
+        <p class="hint">Ranked by severity, with the evidence the agent found.</p>
+        <div id="defects"></div>
+      </div>
+      <div class="panel">
+        <h3>Missing / not detected</h3>
+        <p class="hint">Expected capabilities the agent could not find.</p>
+        <div id="missing"></div>
+        <h3 style="margin-top:22px">Predicted risk if shipped as-is</h3>
+        <div id="risks"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Category breakdown</h3>
+      <div id="categories" class="cats"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Passed checks</h3>
+      <div id="passed" class="passed-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="report-head">
+        <h3>Full diagnostic report</h3>
+        <div class="report-actions">
+          <button class="ghost" id="copyBtn">Copy</button>
+          <button class="ghost" id="downloadBtn">Download .txt</button>
+          <button class="ghost" id="jsonBtn">Download .json</button>
+        </div>
+      </div>
+      <pre id="reportText" class="report"></pre>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="historyPanel">
+    <h3>Run history</h3>
+    <div id="history"></div>
+  </section>
+</main>
+
+<footer>
+  <span>Investier runs read-only, non-destructive probes. Only test systems you are authorised to test.</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
