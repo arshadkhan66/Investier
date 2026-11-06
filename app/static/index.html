@@ -17,6 +17,9 @@
     </div>
   </div>
   <div class="right">
+    <select id="modelSelect" class="model-picker" title="Local model">
+      <option>loading…</option>
+    </select>
     <div class="model-badge" id="modelBadge" title="Local model status">
       <span class="dot"></span><span id="modelText">model: checking…</span>
     </div>
@@ -58,6 +61,7 @@
         <label>Load concurrency <input id="concurrency" type="number" value="10" min="1" max="50" /></label>
         <label class="check"><input id="insecure" type="checkbox" /> Ignore TLS errors</label>
         <label class="check"><input id="checkLinks" type="checkbox" checked /> Crawl internal links</label>
+        <label class="check"><input id="render" type="checkbox" checked /> Render in a real browser (JS apps)</label>
         <label class="check"><input id="useLlm" type="checkbox" checked /> Use local model for planning &amp; summary</label>
       </div>
     </details>
@@ -95,6 +99,12 @@
       <p id="narrativeText"></p>
     </div>
 
+    <div class="panel hidden" id="shotPanel">
+      <h3>Rendered in a real browser</h3>
+      <p class="hint">What a user with JavaScript enabled actually sees.</p>
+      <img id="shot" class="shot" alt="Screenshot of the rendered target" />
+    </div>
+
     <div class="grid-2">
       <div class="panel">
         <h3>Problems &amp; errors found</h3>
@@ -118,6 +128,12 @@
     <div class="panel">
       <h3>Passed checks</h3>
       <div id="passed" class="passed-list"></div>
+    </div>
+
+    <div class="panel hidden" id="infoPanel">
+      <h3>Notes &amp; detections</h3>
+      <p class="hint">Informational findings, e.g. the framework detected and how the page rendered.</p>
+      <div id="info"></div>
     </div>
 
     <div class="panel">

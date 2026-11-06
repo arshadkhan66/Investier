@@ -31,6 +31,10 @@ class TestRequest(BaseModel):
     use_llm: bool = Field(True, description="Use the local model for planning/narrative")
 
 
+class ModelSelect(BaseModel):
+    name: str = Field(..., description="Model alias (e.g. '1b', '3b') or filename")
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": __version__, "model": LLM.status()}
@@ -41,9 +45,24 @@ async def model():
     return LLM.status()
 
 
+@app.get("/api/models")
+async def models():
+    from .llm import available_models
+    return {"installed": available_models(), "active": LLM.model_name}
+
+
 @app.post("/api/model/load")
 async def model_load():
     ok = LLM.load()
+    return {"loaded": ok, "status": LLM.status()}
+
+
+@app.post("/api/model/select")
+async def model_select(req: ModelSelect):
+    ok = LLM.select(req.name)
+    if not ok:
+        raise HTTPException(status_code=404,
+                            detail=f"Model '{req.name}' could not be loaded.")
     return {"loaded": ok, "status": LLM.status()}
 
 

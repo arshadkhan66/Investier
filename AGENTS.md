@@ -21,14 +21,19 @@ Health: `curl localhost:8000/api/health`
 ## Layout
 
 - `app/main.py` — FastAPI app, routes: `/api/health`, `/api/model`,
-  `/api/model/load`, `/api/plan`, `/api/test`, `/`, `/static`.
+  `/api/models`, `/api/model/load`, `/api/model/select`, `/api/plan`,
+  `/api/test`, `/`, `/static`.
 - `app/runner.py` — `run_test(target, instruction, options, use_llm)`.
-- `app/agent.py` — planning + narrative; falls back to rules.
-- `app/llm.py` — llama.cpp wrapper; `LLM.status()`, `LLM.chat()`,
-  `LLM.json_chat()`; JSON repair helpers.
-- `app/analyzer.py` — scoring, defects, missing, risks, verdict, report text.
-- `app/checks/{web,api,load,infra}.py` — suites.
-- `app/static/` — UI.
+- `app/agent.py` — planning + narrative; grounded summary with contradiction
+  checks; falls back to rules/template.
+- `app/llm.py` — llama.cpp wrapper; model registry (`MODEL_REGISTRY`,
+  `_resolve_exact`, `available_models`), `LLM.status()`, `LLM.chat()`,
+  `LLM.json_chat()`, `LLM.select()`; JSON repair helpers.
+- `app/analyzer.py` — scoring, defects, missing, risks, verdict, report text
+  (includes a NOTES & DETECTIONS section for `status="info"` results).
+- `app/checks/{web,api,load,infra,browser}.py` — suites. `browser` uses
+  Playwright; when absent it emits a single `info` result and the rest runs.
+- `app/static/` — UI (model picker, screenshot, notes panel).
 
 ## Conventions
 
@@ -41,4 +46,8 @@ Health: `curl localhost:8000/api/health`
 ## Model
 
 Default `Llama-3.2-1B-Instruct-Q4_K_M.gguf` in `models/` (git-ignored). Override
-with `MODEL_FILE` / `MODEL_DIR`.
+with `MODEL_FILE` / `MODEL_DIR`. Switch at runtime via `/api/model/select`; any
+GGUF in `models/` works. Narrative grounding: `_grounding_facts` builds the fact
+sheet, `_contradictions` rejects unsupported claims per clause, then retries at
+temp 0 before falling back to `_template_narrative`. `narrate()` returns
+`(text, source)` where source is `local-llm|template|rules`.

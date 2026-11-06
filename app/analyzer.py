@@ -31,13 +31,18 @@ EXPECTED = [
     ("sitemap", "A sitemap", "low"),
     ("links", "Working internal links", "high"),
     ("placeholders", "Production-ready (non-placeholder) copy", "medium"),
+    ("render_load", "A page that renders in a browser", "critical"),
+    ("render_console", "A clean browser console", "medium"),
+    ("render_pageerror", "No uncaught JavaScript exceptions", "high"),
+    ("render_empty", "Visible content after rendering", "critical"),
     ("email_spf", "An SPF record", "medium"),
     ("email_dmarc", "A DMARC policy", "medium"),
     ("dns_caa", "A CAA record", "low"),
 ]
 
 WEB_ONLY = {"title", "meta_desc", "og_tags", "structured_data", "viewport", "favicon",
-            "a11y", "img_alt", "robots", "sitemap", "links", "placeholders"}
+            "a11y", "img_alt", "robots", "sitemap", "links", "placeholders",
+            "render_load", "render_console", "render_pageerror", "render_empty"}
 
 
 def band(score: int) -> str:
@@ -72,11 +77,15 @@ def analyze(target: str, mode: str, results: list[dict], started: float, finishe
     defects = sorted([r for r in results if r["status"] in ("fail", "warn")],
                      key=lambda r: (order.get(r["severity"], 5), r["status"] != "fail"))
     passes = [r for r in results if r["status"] == "pass"]
+    infos = [r for r in results if r["status"] == "info"]
 
     seen = {r["id"] for r in results}
     failed = {r["id"] for r in results if r["status"] in ("fail", "warn")}
+    rendered = any(r["category"] == "Rendering" for r in results)
     missing = []
     for cid, label, sev in EXPECTED:
+        if cid.startswith("render_") and not rendered:
+            continue  # rendering was skipped or unavailable, so do not flag it
         if cid in seen:
             if cid in failed:
                 missing.append({"item": label, "severity": sev,
@@ -100,7 +109,7 @@ def analyze(target: str, mode: str, results: list[dict], started: float, finishe
     risks = _risks(results, mode)
     duration = round(finished - started, 2)
     report_text = _compose(target, mode, score, counts, len(results), defects, missing,
-                           risks, categories, duration, instruction, passes)
+                           risks, categories, duration, instruction, passes, infos)
 
     return {
         "target": target, "mode": mode, "instruction": instruction,
@@ -110,6 +119,7 @@ def analyze(target: str, mode: str, results: list[dict], started: float, finishe
                     "fail": counts["fail"], "info": counts["info"]},
         "categories": {k: dict(v) for k, v in categories.items()},
         "defects": defects, "passed": passes, "missing": missing, "risks": risks,
+        "info": infos,
         "report": report_text,
     }
 
@@ -166,6 +176,21 @@ def _risks(results: list[dict], mode: str) -> list[dict]:
     if st("viewport") in ("fail", "warn"):
         risks.append({"level": "medium", "text":
                       "Without a responsive viewport most users (mobile) see a broken layout."})
+    if st("render_empty") == "fail":
+        risks.append({"level": "critical", "text":
+                      "The page renders blank in a real browser: users on JavaScript-enabled "
+                      "devices would see nothing."})
+    if st("render_pageerror") == "fail":
+        risks.append({"level": "high", "text":
+                      "Uncaught JavaScript exceptions break parts of the app for real users."})
+    if st("render_load") == "fail":
+        risks.append({"level": "high", "text":
+                      "The page failed to render in a real browser, which is what most "
+                      "users actually run."})
+    if st("render_console") == "fail":
+        risks.append({"level": "medium", "text":
+                      "Repeated console errors usually indicate broken features or failed "
+                      "data loads."})
     if st("a11y") in ("fail", "warn"):
         risks.append({"level": "medium", "text":
                       "Accessibility gaps exclude users with assistive technology and "
@@ -178,7 +203,7 @@ def _risks(results: list[dict], mode: str) -> list[dict]:
 
 
 def _compose(target, mode, score, counts, total, defects, missing, risks,
-             categories, duration, instruction, passes) -> str:
+             categories, duration, instruction, passes, results_info) -> str:
     L = []
     L.append("Investier Diagnostic Report")
     L.append("=" * 62)
@@ -201,6 +226,14 @@ def _compose(target, mode, score, counts, total, defects, missing, risks,
     else:
         L.append("  No passing checks recorded.")
     L.append("")
+
+    infos = [r for r in results_info]
+    if infos:
+        L.append("NOTES & DETECTIONS")
+        L.append("-" * 62)
+        for r in infos[:15]:
+            L.append(f"  [..]   {r['category']} :: {r['name']} - {r['detail']}")
+        L.append("")
 
     L.append("PROBLEMS & ERRORS FOUND (ranked by severity)")
     L.append("-" * 62)

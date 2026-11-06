@@ -149,30 +149,150 @@ class Agent:
         }
 
     # ------------------------------------------------------------- analysis
-    def narrate(self, report: dict) -> str | None:
-        """Ask the local model for a short executive narrative of the findings."""
+    def narrate(self, report: dict) -> tuple[str | None, str]:
+        """Write an executive summary that is strictly grounded in findings.
+
+        Returns (text, source) where source is 'local-llm' when the model wrote
+        it, or 'template' when the deterministic fallback was used.
+
+        Guardrails against a small model inventing claims:
+          1. The prompt is extractive: it may only restate facts it is given.
+          2. The prompt explicitly lists what is *not* a problem, so it cannot
+             claim a passing check failed.
+          3. The output is checked for contradictions against the report; on a
+             contradiction the model is asked once more with a stricter prompt.
+          4. If it still fails, we return a deterministic template narrative.
+        """
         if not self.llm.available and not self.llm.load():
-            return None
-        defects = report["defects"][:8]
-        lines = [f"- [{d['severity']}/{d['status']}] {d['name']}: {d['detail']}"
-                 for d in defects]
-        missing = [m["item"] for m in report["missing"][:8]]
+            return None, "rules"
+
+        facts = self._grounding_facts(report)
         user = (
-            f"Target: {report['target']}\n"
-            f"Health score: {report['score']}/100 ({report['grade']})\n"
-            f"Instruction from the user: {report.get('instruction') or '(none)'}\n"
-            f"Problems found:\n" + ("\n".join(lines) or "- none") + "\n"
-            f"Missing or not detected: {', '.join(missing) or 'none'}\n\n"
-            "Write a short executive summary (max 90 words) for the person who "
-            "asked for this test. State the overall state, the most important "
-            "problem, and the single most valuable next action. Plain prose, no lists."
+            "You are writing an executive summary. Use ONLY the facts listed "
+            "below. Do not add, infer, or invent any problem, cause or fix that "
+            "is not listed. Never say a check failed if it appears under "
+            "WHAT PASSED. If unsure, say less.\n\n"
+            f"{facts}\n\n"
+            "Write 3 to 4 sentences: (1) the overall state and score, "
+            "(2) the single most important problem from PROBLEMS, "
+            "(3) one thing that is working, (4) the most valuable next action. "
+            "Plain prose, no lists, no markdown."
         )
-        system = ("You are a senior software QA engineer writing a concise, "
-                  "factual test summary. Never invent findings that are not listed.")
-        out = self.llm.chat(system, user, max_tokens=200, temperature=0.3)
-        if out:
-            return out.strip()
-        return None
+        system = ("You are a factual QA summariser. You may only restate the "
+                  "provided facts. Inventing findings is a serious error.")
+
+        for attempt in range(2):
+            out = self.llm.chat(system, user, max_tokens=220,
+                                temperature=0.1 if attempt == 0 else 0.0)
+            if not out:
+                break
+            text = out.strip()
+            problems = self._contradictions(text, report)
+            if not problems:
+                return text, "local-llm"
+            # Retry with an explicit correction naming the invented claims.
+            user += ("\n\nYour previous answer made claims that contradict the "
+                     "facts: " + "; ".join(problems) + ". Rewrite it using only "
+                     "the listed facts.")
+
+        return self._template_narrative(report), "template"
+
+    @staticmethod
+    def _verdict_line(report: dict) -> str:
+        """Pull the human verdict sentence out of the composed report."""
+        if "VERDICT" not in report.get("report", ""):
+            return ""
+        for line in report["report"].split("VERDICT")[-1].splitlines():
+            line = line.strip().strip("-").strip()
+            if len(line) > 12 and not set(line) <= {"-", " "}:
+                return line
+        return ""
+
+    def _grounding_facts(self, report: dict) -> str:
+        """Assemble a compact, unambiguous fact sheet for the summariser."""
+        top = report["defects"][:5]
+        passed = [r["name"] for r in report.get("passed", [])][:12]
+        missing = [m["item"] for m in report["missing"][:6]]
+        lines = [
+            f"TARGET: {report['target']}",
+            f"SCORE: {report['score']}/100 ({report['grade']})",
+            f"COUNTS: {report['summary']['fail']} failed, "
+            f"{report['summary']['warn']} warned, {report['summary']['pass']} passed.",
+            "",
+            "PROBLEMS (the only problems that exist):",
+        ]
+        lines += ([f"- {d['name']} [{d['severity']}]: {d['detail']}" for d in top]
+                  or ["- none"])
+        lines += ["", "WHAT PASSED (these are NOT problems):"]
+        lines += ([f"- {p}" for p in passed] or ["- (nothing recorded)"])
+        if missing:
+            lines += ["", "MISSING:"] + [f"- {m}" for m in missing]
+        verdict = self._verdict_line(report)
+        if verdict:
+            lines += ["", f"VERDICT: {verdict}"]
+        return "\n".join(lines)
+
+    def _contradictions(self, text: str, report: dict) -> list[str]:
+        """Detect claims that contradict the report.
+
+        Catches the common small-model failure of asserting a passing check
+        failed (e.g. "missing SSL/TLS certificate" when TLS passed). Works per
+        clause, so "security headers failed; TLS passed" is not misread as a
+        claim that TLS failed.
+        """
+        import re
+        low = text.lower()
+        passed = {r["id"] for r in report.get("passed", [])}
+        failed_ids = {r["id"] for r in report["defects"]}
+
+        negative = ("missing", "lacks", "without", "absent", "no ", "not ",
+                    "failed", "fails", "broken", "unavailable", "none")
+        topics = {
+            "tls": ("certificate", "ssl", "tls"),
+            "https": ("https", "encryption", "encrypted transport"),
+            "compression": ("compression", "gzip", "brotli"),
+            "title": ("page title", "title tag"),
+            "viewport": ("viewport", "responsive"),
+        }
+        # Split into clauses so a negative in one clause cannot taint a topic
+        # mentioned in another.
+        clauses = [c for c in re.split(r"[.;!?\n]|,\s|\band\b|\bbut\b", low) if c.strip()]
+        problems = []
+        for cid, words in topics.items():
+            if cid not in passed or cid in failed_ids:
+                continue
+            for clause in clauses:
+                hit = next((w for w in words if w in clause), None)
+                if hit and any(neg in clause for neg in negative):
+                    problems.append(f"claimed '{hit}' is a problem but it passed")
+                    break
+        # Only flag 'critical' when it is used as a severity claim. Small models
+        # often write "the most critical problem", meaning "most important".
+        if re.search(r"critical[\s-]?(severity|level|risk|issue|vulnerabilit)"
+                     r"|severity[\s:]+critical|\brated critical\b", low) and not any(
+                d["severity"] == "critical" for d in report["defects"]):
+            problems.append("called something 'critical' but nothing is critical")
+        return problems[:4]
+
+    def _template_narrative(self, report: dict) -> str:
+        """Deterministic fallback narrative: always correct, never invents."""
+        s = report["summary"]
+        top = report["defects"][0] if report["defects"] else None
+        worked = report.get("passed", [])
+        parts = [f"{report['target']} scored {report['score']}/100 ({report['grade']}) "
+                 f"across {s['total']} checks: {s['pass']} passed, {s['warn']} warned, "
+                 f"{s['fail']} failed."]
+        if top:
+            parts.append(f"The most important problem is {top['name']} "
+                         f"({top['severity']}): {top['detail']}")
+        else:
+            parts.append("No problems were detected in this pass.")
+        if worked:
+            parts.append(f"{worked[0]['name']} is working, among other checks.")
+        verdict = self._verdict_line(report)
+        if verdict:
+            parts.append(verdict)
+        return " ".join(parts)
 
     def explain_defect(self, defect: dict) -> str | None:
         """Optional: a plain-language explanation + fix hint for one defect."""

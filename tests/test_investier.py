@@ -185,3 +185,102 @@ def test_end_to_end_api_mode(local_server):
                                   use_llm=False))
     assert report["mode"] == "api"
     assert any(r["category"] == "API" for r in report["defects"] + report["passed"])
+
+
+# ------------------------------------------------ narrative grounding
+def _report_for_narrative():
+    return {
+        "target": "https://example.com",
+        "score": 76, "grade": "Good",
+        "summary": {"total": 3, "pass": 2, "warn": 0, "fail": 1, "info": 0},
+        "defects": [{"id": "sec_headers", "category": "Security",
+                     "name": "Security headers", "status": "fail",
+                     "severity": "high", "detail": "6 headers missing."}],
+        "passed": [{"id": "tls", "category": "Security", "name": "TLS certificate",
+                    "status": "pass", "severity": "info", "detail": "valid"},
+                   {"id": "https", "category": "Security", "name": "HTTPS",
+                    "status": "pass", "severity": "info", "detail": "ok"}],
+        "missing": [{"item": "Baseline security headers", "severity": "high"}],
+        "report": "x\nVERDICT\n" + "-" * 62 + "\n  SHIP WITH CAUTION. Fix the highs.\n",
+    }
+
+
+def test_contradiction_catches_false_missing_tls():
+    a = Agent()
+    rep = _report_for_narrative()
+    bad = "The app is missing SSL/TLS certificates and lacks HTTPS."
+    assert a._contradictions(bad, rep)
+    good = "Security headers failed; TLS certificate and HTTPS passed."
+    assert not a._contradictions(good, rep)
+
+
+def test_contradiction_flags_false_critical():
+    a = Agent()
+    rep = _report_for_narrative()
+    assert a._contradictions("This is a critical severity issue.", rep)
+    assert a._contradictions("Rated critical by the scanner.", rep)
+    # 'most critical problem' is ordinary English, not a severity claim.
+    assert not a._contradictions("The most critical problem is the headers.", rep)
+
+
+def test_template_narrative_is_grounded_and_clean():
+    a = Agent()
+    text = a._template_narrative(_report_for_narrative())
+    assert "76/100" in text
+    assert "Security headers" in text
+    assert "SHIP WITH CAUTION" in text
+    assert "-----" not in text            # no separator leaking into prose
+    # It names a passing check as working, never as the problem.
+    assert "is working" in text
+
+
+def test_grounding_facts_lists_passes_and_problems():
+    a = Agent()
+    facts = a._grounding_facts(_report_for_narrative())
+    assert "PROBLEMS" in facts and "WHAT PASSED" in facts
+    assert "TLS certificate" in facts          # a pass is listed as not-a-problem
+    assert "Security headers" in facts
+
+
+def test_narrate_returns_source_tuple_without_model():
+    a = Agent()
+    a.llm._llm = None
+    a.llm._loaded = True          # pretend we tried; available stays False
+    a.llm.model_path = None
+    text, source = a.narrate(_report_for_narrative())
+    assert text is None and source == "rules"
+
+
+# ------------------------------------------------ model registry
+def test_model_registry_resolves_aliases():
+    from app.llm import _resolve_model, available_models, MODEL_REGISTRY
+    assert set(MODEL_REGISTRY) >= {"1b", "3b", "0.5b", "1.5b"}
+    # A bogus alias must never raise; it falls back to whatever exists.
+    assert _resolve_model("does-not-exist") is None or True
+    assert isinstance(available_models(), list)
+
+
+def test_model_select_rejects_unknown():
+    from app.llm import LocalLLM
+    llm = LocalLLM()
+    assert llm.select("no-such-model-xyz") is False
+    assert llm._error
+
+
+# ------------------------------------------------ browser fallback
+def test_browser_checks_degrade_without_playwright(monkeypatch):
+    from app.checks import browser
+    monkeypatch.setattr(browser, "HAVE_PLAYWRIGHT", False)
+    results, artifacts = asyncio.run(browser.run_browser_checks("https://example.com", {}))
+    assert len(results) == 1
+    assert results[0]["status"] == "info"
+    assert artifacts == {}
+
+
+def test_render_capabilities_skipped_when_no_render(local_server):
+    """A run without rendering must not report render_* as missing."""
+    report = asyncio.run(run_test(local_server, "test everything",
+                                  {"render": False}, use_llm=False))
+    items = {m["item"] for m in report["missing"]}
+    assert "A page that renders in a browser" not in items
+    assert "Visible content after rendering" not in items

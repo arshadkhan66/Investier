@@ -22,6 +22,55 @@ from typing import Any
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", Path(__file__).resolve().parent.parent / "models"))
 DEFAULT_MODEL = os.environ.get("MODEL_FILE", "Llama-3.2-1B-Instruct-Q4_K_M.gguf")
 
+# Known models, matched by filename substring. The first match that exists on
+# disk wins when a caller asks for an alias.
+MODEL_REGISTRY = {
+    "1b": {"file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf", "label": "Llama 3.2 1B",
+           "params": "1B", "n_ctx": 4096},
+    "3b": {"file": "Qwen2.5-3B-Instruct-Q4_K_M.gguf", "label": "Qwen 2.5 3B",
+           "params": "3B", "n_ctx": 4096},
+    "0.5b": {"file": "qwen2.5-0.5b-instruct-q4_k_m.gguf", "label": "Qwen 2.5 0.5B",
+             "params": "0.5B", "n_ctx": 4096},
+    "1.5b": {"file": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "label": "Qwen 2.5 1.5B",
+             "params": "1.5B", "n_ctx": 4096},
+}
+
+
+def available_models() -> list[dict]:
+    """List models present on disk, plus which is the active default."""
+    out = []
+    seen = set()
+    for alias, spec in MODEL_REGISTRY.items():
+        path = MODEL_DIR / spec["file"]
+        if path.exists():
+            out.append({"alias": alias, "file": spec["file"], "label": spec["label"],
+                        "params": spec["params"], "size_mb": round(path.stat().st_size / 1e6)})
+            seen.add(spec["file"])
+    for p in sorted(MODEL_DIR.glob("*.gguf")):
+        if p.name not in seen:
+            out.append({"alias": p.stem, "file": p.name, "label": p.stem,
+                        "params": "?", "size_mb": round(p.stat().st_size / 1e6)})
+    return out
+
+
+def _resolve_exact(which: str) -> Path | None:
+    """Resolve an explicit model name strictly (alias, filename or substring)."""
+    if not which:
+        return None
+    if which in MODEL_REGISTRY:
+        return MODEL_DIR / MODEL_REGISTRY[which]["file"]
+    direct = MODEL_DIR / which
+    if direct.exists():
+        return direct
+    for p in MODEL_DIR.glob("*.gguf"):
+        if which.lower() in p.name.lower():
+            return p
+    return None
+
+
+def _resolve_model(which: str | None) -> Path | None:
+    return _resolve_exact(which) or _find_model()
+
 
 def _find_model() -> Path | None:
     if not MODEL_DIR.exists():
@@ -42,6 +91,7 @@ class LocalLLM:
         self._lock = threading.Lock()
         self._loaded = False
         self._error: str | None = None
+        self._active: str | None = None
         self.model_path = _find_model()
         self.model_name = self.model_path.name if self.model_path else None
 
@@ -55,10 +105,33 @@ class LocalLLM:
             "engine": "llama.cpp (CPU)",
             "model": self.model_name,
             "model_path": str(self.model_path) if self.model_path else None,
+            "active": self._active,
             "loaded": self._loaded,
             "available": self.available,
             "error": self._error,
+            "installed": available_models(),
         }
+
+    def select(self, which: str) -> bool:
+        """Switch to a different installed model, unloading the current one.
+
+        An explicit but unknown name fails rather than silently loading some
+        other model, so the UI can report the mistake.
+        """
+        path = _resolve_exact(which)
+        if not path or not path.exists():
+            self._error = f"model '{which}' not found"
+            return False
+        with self._lock:
+            if self.model_path == path and self._llm is not None:
+                return True
+            self._llm = None
+            self._loaded = False
+            self._error = None
+            self.model_path = path
+            self.model_name = path.name
+            self._active = which
+        return self.load()
 
     def load(self, n_ctx: int = 4096, n_threads: int | None = None) -> bool:
         if self._loaded:

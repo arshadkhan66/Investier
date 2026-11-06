@@ -33,6 +33,7 @@ no external API keys.
 | SEO | Title, meta description, Open Graph, JSON-LD, robots.txt, sitemap, link inventory |
 | Functionality | Internal link health, form well-formedness, JS error markers |
 | Content | Placeholder / unfinished copy detection |
+| Rendering | Real headless-browser load (Playwright/Chromium): JavaScript execution, rendered title and content, console errors, uncaught exceptions, failed requests, framework detection, full-page screenshot |
 | API | JSON validity, content-type, response shape, latency, CORS, auth rejection, 404 shape, rate-limit signalling, GraphQL probe |
 | Infrastructure / Email | DNS A/AAAA/NS/MX, SPF, DMARC, CAA |
 
@@ -46,13 +47,47 @@ no external API keys.
   every feature falls back to deterministic rules, so the platform always works.
   The UI shows which brain is active.
 
-Swap models with environment variables:
+### Model registry and switching
+
+Any GGUF in `models/` is usable. Known models are recognised by filename, and
+you can switch at runtime from the UI model picker or the API:
+
+```bash
+curl -s localhost:8000/api/models                       # list installed + active
+curl -s -X POST localhost:8000/api/model/select \
+  -H 'Content-Type: application/json' -d '{"name":"3b"}'
+```
+
+Download a larger model (better prose, still CPU-only):
+
+```bash
+./scripts/download_model.sh 3b     # Qwen 2.5 3B
+./scripts/download_model.sh 1.5b   # Qwen 2.5 1.5B
+./scripts/download_model.sh 0.5b   # Qwen 2.5 0.5B
+```
+
+Or point at any Hugging Face GGUF:
 
 ```bash
 MODEL_REPO=Qwen/Qwen2.5-1.5B-Instruct-GGUF \
 MODEL_FILE=qwen2.5-1.5b-instruct-q4_k_m.gguf \
   ./scripts/download_model.sh
 ```
+
+### Grounded summaries (anti-hallucination)
+
+Small models invent findings. The narrative is therefore constrained:
+
+1. The prompt is **extractive** — the model may only restate facts it is given.
+2. The fact sheet lists what **passed** as explicitly *not* a problem, so the
+   model cannot claim a passing check failed.
+3. The output is scanned for **contradictions** against the report (per clause,
+   so "headers failed; TLS passed" is not misread); on a hit the model retries
+   once at temperature 0.
+4. If it still contradicts, a deterministic **template** narrative is used.
+
+The report exposes `narrative_source` (`local-llm`, `template`, `rules` or
+`disabled`) so you always know who wrote the summary.
 
 ## Quick start
 
@@ -70,7 +105,9 @@ Open http://localhost:8000, type an instruction, point it at a target, run.
 |---|---|---|
 | GET | `/api/health` | Service and model status |
 | GET | `/api/model` | Local model status |
+| GET | `/api/models` | List installed models and the active one |
 | POST | `/api/model/load` | Force-load the model |
+| POST | `/api/model/select` | Switch to an installed model by alias/filename |
 | POST | `/api/plan` | Return the plan for an instruction + target |
 | POST | `/api/test` | Run a full diagnostic and return the report |
 
@@ -81,8 +118,11 @@ curl -s localhost:8000/api/test -H 'Content-Type: application/json' \
 ```
 
 Request body: `target`, `instruction`, `options` (`samples`, `max_links`,
-`timeout`, `concurrency`, `auth_header`, `insecure`, `check_links`), and
-`use_llm`.
+`timeout`, `concurrency`, `auth_header`, `insecure`, `check_links`, `render`,
+`render_wait`), and `use_llm`.
+
+The report includes `artifacts` — when rendering ran, `artifacts.screenshot`
+holds a base64 PNG of what a real browser saw.
 
 ## Tests
 

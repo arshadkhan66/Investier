@@ -52,6 +52,7 @@ async function run() {
     concurrency: parseInt($("concurrency").value, 10) || 10,
     insecure: $("insecure").checked,
     check_links: $("checkLinks").checked,
+    render: $("render").checked,
   };
   const useLlm = $("useLlm").checked;
 
@@ -135,9 +136,27 @@ function render(d) {
     $("narrativePanel").classList.add("hidden");
   }
 
+  const shot = d.artifacts && d.artifacts.screenshot;
+  if (shot) {
+    $("shotPanel").classList.remove("hidden");
+    $("shot").src = shot;
+  } else {
+    $("shotPanel").classList.add("hidden");
+  }
+
   $("defects").innerHTML = d.defects.length
     ? d.defects.map(defectHtml).join("")
     : `<p class="hint">No problems found. 🎉</p>`;
+
+  const info = d.info || [];
+  if (info.length) {
+    $("infoPanel").classList.remove("hidden");
+    $("info").innerHTML = info.map((r) =>
+      `<div class="info-row"><span class="cat">${esc(r.category)}</span>
+       <b>${esc(r.name)}</b><span class="d">${esc(r.detail)}</span></div>`).join("");
+  } else {
+    $("infoPanel").classList.add("hidden");
+  }
 
   $("missing").innerHTML = d.missing.length
     ? d.missing.map((m) => `<div class="missing-item"><span class="pill ${m.severity}">${m.severity}</span>
@@ -225,6 +244,31 @@ async function refreshModel() {
       $("modelText").textContent = "model: rules fallback";
       badge.title = s.error || "model not loaded";
     }
+    const sel = $("modelSelect");
+    if (sel.dataset.filled !== "1" && s.installed && s.installed.length) {
+      sel.innerHTML = s.installed.map((m) =>
+        `<option value="${esc(m.alias)}"${m.file === s.model ? " selected" : ""}>${esc(m.label)} (${m.params})</option>`).join("");
+      sel.dataset.filled = "1";
+    }
   } catch { /* ignore */ }
 }
+
+$("modelSelect").addEventListener("change", async (e) => {
+  const name = e.target.value;
+  const badge = $("modelBadge");
+  $("modelText").textContent = "model: switching…";
+  badge.classList.remove("on", "off");
+  try {
+    const r = await fetch("/api/model/select", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || "switch failed");
+    await refreshModel();
+  } catch (err) {
+    $("modelText").textContent = "model: switch failed";
+    badge.classList.add("off");
+    badge.title = err.message;
+  }
+});
 refreshModel();

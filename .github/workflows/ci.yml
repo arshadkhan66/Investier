@@ -20,5 +20,9 @@ jobs:
           # compile in CI and the platform degrades gracefully without it.
           grep -v llama-cpp-python requirements.txt > /tmp/req.txt
           pip install -r /tmp/req.txt pytest
+      - name: Install browser engine (optional)
+        # The browser suite degrades gracefully, but installing Chromium lets
+        # CI exercise the real rendering path.
+        run: python -m playwright install --with-deps chromium || echo "skipped"
       - name: Run tests
         run: python -m pytest tests/ -q
